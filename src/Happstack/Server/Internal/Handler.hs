@@ -4,6 +4,7 @@ module Happstack.Server.Internal.Handler
     ( request
     , parseResponse
     , putRequest
+    , parseRequest
     ) where
 
 import qualified Paths_happstack_server as Paths
@@ -48,6 +49,23 @@ required :: String -> Maybe a -> Either String a
 required err Nothing  = Left err
 required _   (Just a) = Right a
 
+parseRequest inputStr = do
+  (topStr, restStr) <- required "failed to separate request" $ splitAtEmptyLine inputStr
+  (rql, headerStr)  <- required "failed to separate headers/body" $ splitAtCRLF topStr
+  let (m,u,v) = requestLine rql
+  headers' <- case parseHeaders "host" (L.unpack headerStr) of
+    Nothing -> Left "failed to parse host header"
+    Just x -> Right x
+  let headers = mkHeaders headers'
+  let contentLen = fromMaybe 0 $ fmap fst (P.readInt =<< getHeaderUnsafe contentlengthC headers)
+  (body, nextRequest) <- case () of
+      () | contentLen < 0               -> Left "negative content-length"
+         | isJust $ getHeaderBS transferEncodingC headers ->
+             return $ consumeChunks restStr
+         | otherwise                       -> return (L.splitAt (fromIntegral contentLen) restStr)
+  let cookies = [ (cookieName c, c) | cl <- fromMaybe [] (fmap getCookies (getHeader "Cookie" headers)), c <- cl ] -- Ugle
+  return (m, u, cookies, v, headers, body, nextRequest)
+  
 rloop :: TimeoutIO
          -> Maybe (LogAccess UTCTime)
          -> Host
@@ -58,25 +76,8 @@ rloop timeoutIO mlog host handler inputStr
     | L.null inputStr = return ()
     | otherwise
     = (join $
-      do let parseRequest
-                 = do
-                      (topStr, restStr) <- required "failed to separate request" $ splitAtEmptyLine inputStr
-                      (rql, headerStr)  <- required "failed to separate headers/body" $ splitAtCRLF topStr
-                      let (m,u,v) = requestLine rql
-                      headers' <- case parseHeaders "host" (L.unpack headerStr) of
-                        Nothing -> Left "failed to parse host header"
-                        Just x -> Right x
-                      let headers = mkHeaders headers'
-                      let contentLen = fromMaybe 0 $ fmap fst (P.readInt =<< getHeaderUnsafe contentlengthC headers)
-                      (body, nextRequest) <- case () of
-                          () | contentLen < 0               -> Left "negative content-length"
-                             | isJust $ getHeaderBS transferEncodingC headers ->
-                                 return $ consumeChunks restStr
-                             | otherwise                       -> return (L.splitAt (fromIntegral contentLen) restStr)
-                      let cookies = [ (cookieName c, c) | cl <- fromMaybe [] (fmap getCookies (getHeader "Cookie" headers)), c <- cl ] -- Ugle
-                      return (m, u, cookies, v, headers, body, nextRequest)
-
-         case parseRequest of
+      do 
+         case parseRequest inputStr of
            Left err -> error $ "failed to parse HTTP request: " ++ err
            Right (m, u, cookies, v, headers, body, nextRequest)
               -> pure $
