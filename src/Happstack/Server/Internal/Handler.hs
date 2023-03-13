@@ -5,6 +5,7 @@ module Happstack.Server.Internal.Handler
     , parseResponse
     , putRequest
     , parseRequest
+    , responseMessage
     ) where
 
 import qualified Paths_happstack_server as Paths
